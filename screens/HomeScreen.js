@@ -1,129 +1,123 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
-import MapView, { Marker, Polyline } from 'react-native-maps';
+import React, { useState, useEffect, useRef, useContext } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { io } from 'socket.io-client';
+import * as Location from 'expo-location';
 import { API_URL } from '../config';
+import { LangContext } from '../App';
 
-export default function HomeScreen({ navigation }) {
-  const [socket, setSocket] = useState(null);
-  const [location, setLocation] = useState({
-    latitude: 31.9454, // Default to Amman, Jordan
-    longitude: 35.9284,
-    latitudeDelta: 0.05,
-    longitudeDelta: 0.05,
-  });
+export default function HomeScreen({ route }) {
+  const { token, userId } = route.params || {};
+  const { t, lang, setLang } = useContext(LangContext);
+  const socketRef = useRef(null);
+  const [location, setLocation] = useState(null);
   const [activeTrip, setActiveTrip] = useState(null);
-  const [driverLocation, setDriverLocation] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const newSocket = io(API_URL);
-    setSocket(newSocket);
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(t.alert, t.locationPermission);
+        setLoading(false);
+        return;
+      }
+      let loc = await Location.getCurrentPositionAsync({});
+      setLocation(loc.coords);
+      setLoading(false);
+    })();
 
-    newSocket.on('connect', () => {
-      console.log('Connected to backend');
-    });
+    const newSocket = io(API_URL);
+    socketRef.current = newSocket;
 
     newSocket.on('trip_status_updated', (trip) => {
       setActiveTrip(trip);
       if (trip.status === 'accepted') {
-        Alert.alert('Trip Accepted', `Driver ${trip.driverId} is on the way!`);
+        Alert.alert(t.tripAcceptedAlert, t.driverComingAlert);
       }
     });
 
-    newSocket.on('active_drivers_update', (drivers) => {
-      if (activeTrip && activeTrip.driverId) {
-        const driver = drivers.find(d => d.driverId === activeTrip.driverId);
-        if (driver) {
-          setDriverLocation({ latitude: driver.lat, longitude: driver.lng });
-        }
-      }
-    });
-
-    return () => newSocket.close();
-  }, [activeTrip]);
+    return () => { newSocket.close(); socketRef.current = null; };
+  }, []);
 
   const requestTrip = () => {
-    if (!socket) return;
-    socket.emit('request_trip', {
-      riderId: 1, // hardcoded for now, would use jwt payload
+    if (!socketRef.current || !location) return;
+    socketRef.current.emit('request_trip', {
+      riderId: userId || 1,
       pickup: { lat: location.latitude, lng: location.longitude },
-      dropoff: { lat: location.latitude + 0.01, lng: location.longitude + 0.01 } // demo dropoff
+      dropoff: { lat: location.latitude + 0.01, lng: location.longitude + 0.01 }
     });
-    Alert.alert('Trip Requested', 'Looking for nearby drivers...');
+    Alert.alert(t.tripRequested, t.searchingDriver);
   };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text style={styles.loadingText}>{t.loadingLocation}</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <MapView style={styles.map} initialRegion={location}>
-        <Marker coordinate={location} title="Pickup Location" />
-        
-        {activeTrip && activeTrip.dropoff && (
-          <Marker 
-            coordinate={{ latitude: activeTrip.dropoff.lat, longitude: activeTrip.dropoff.lng }} 
-            title="Dropoff" 
-            pinColor="green" 
-          />
-        )}
-        
-        {driverLocation && (
-          <Marker 
-            coordinate={driverLocation} 
-            title="Driver" 
-            pinColor="blue" 
-          />
-        )}
-      </MapView>
-      
-      <View style={styles.footer}>
-        <Text style={styles.status}>
-          {activeTrip 
-            ? `Status: ${activeTrip.status.toUpperCase()}` 
-            : 'Ready to request a ride'}
+      <TouchableOpacity style={styles.langBtn} onPress={() => setLang(lang === 'ar' ? 'en' : 'ar')}>
+        <Text style={styles.langText}>{t.switchLang}</Text>
+      </TouchableOpacity>
+
+      <View style={styles.locationCard}>
+        <Text style={styles.locationTitle}>{t.yourLocation}</Text>
+        <Text style={styles.locationCoords}>
+          {location ? `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}` : t.locationNotFound}
         </Text>
-        
-        <TouchableOpacity 
-          style={[styles.button, activeTrip && styles.buttonDisabled]} 
-          onPress={requestTrip}
-          disabled={!!activeTrip}
-        >
-          <Text style={styles.buttonText}>Request Ride Now</Text>
-        </TouchableOpacity>
       </View>
+
+      <View style={styles.statusCard}>
+        <Text style={styles.statusTitle}>
+          {activeTrip
+            ? `${t.tripStatus}: ${activeTrip.status === 'accepted' ? t.tripAccepted : t.tripPending}`
+            : t.readyToRide}
+        </Text>
+        {activeTrip && activeTrip.status === 'accepted' && (
+          <View style={styles.tripDetails}>
+            <Text style={styles.detailText}>{t.driverOnWay}</Text>
+            <Text style={styles.detailText}>{t.driverNum}: {activeTrip.driverId}</Text>
+          </View>
+        )}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.button, (activeTrip || !location) && styles.buttonDisabled]}
+        onPress={requestTrip}
+        disabled={!!activeTrip || !location}
+      >
+        <Text style={styles.buttonText}>{activeTrip ? t.activeTrip : t.requestRide}</Text>
+      </TouchableOpacity>
+
+      {activeTrip && (
+        <TouchableOpacity style={styles.cancelButton} onPress={() => setActiveTrip(null)}>
+          <Text style={styles.cancelButtonText}>{t.cancelTrip}</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  map: {
-    flex: 1,
-  },
-  footer: {
-    padding: 20,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  status: {
-    fontSize: 16,
-    marginBottom: 15,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  button: {
-    backgroundColor: '#000',
-    padding: 15,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
+  container: { flex: 1, backgroundColor: '#f8f9fa', padding: 20, justifyContent: 'center' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8f9fa' },
+  loadingText: { marginTop: 15, fontSize: 16, color: '#666' },
+  langBtn: { position: 'absolute', top: 15, right: 20, backgroundColor: '#eee', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, zIndex: 10 },
+  langText: { fontSize: 14, fontWeight: '600', color: '#333' },
+  locationCard: { backgroundColor: '#fff', padding: 20, borderRadius: 12, marginBottom: 20, elevation: 3, alignItems: 'center' },
+  locationTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 8 },
+  locationCoords: { fontSize: 14, color: '#888' },
+  statusCard: { backgroundColor: '#fff', padding: 20, borderRadius: 12, marginBottom: 30, elevation: 3, alignItems: 'center' },
+  statusTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', textAlign: 'center' },
+  tripDetails: { marginTop: 15, alignItems: 'center' },
+  detailText: { fontSize: 16, color: '#555', marginBottom: 5 },
+  button: { backgroundColor: '#007AFF', padding: 18, borderRadius: 12, alignItems: 'center', elevation: 3 },
+  buttonDisabled: { backgroundColor: '#b0b0b0' },
+  buttonText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  cancelButton: { marginTop: 15, padding: 15, borderRadius: 12, alignItems: 'center', borderWidth: 1, borderColor: '#ff3b30' },
+  cancelButtonText: { color: '#ff3b30', fontSize: 16, fontWeight: '600' },
 });
